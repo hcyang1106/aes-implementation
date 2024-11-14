@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "AES.h"
+#include <omp.h>
 
 uint8_t *AES_gen_key(void) {
     uint8_t *key = malloc(sizeof(uint8_t) * AES_BLOCK_SIZE);
@@ -19,6 +20,7 @@ static void key_expand_core(uint8_t *in, uint8_t it) {
     uint32_t *tmp = (uint32_t *)in; // be sure to 32 byte pointer first
     *tmp = ((*tmp & 0xFF) << 24) | (*tmp >> 8);
 
+    #pragma omp parallel for
     for (int i = 0; i < 4; i++) {
         *(in + i) = sbox[*(in + i)];
     }
@@ -54,6 +56,7 @@ uint8_t *AES_key_expand(uint8_t *key) {
 }
 
 static void sub_bytes (uint8_t *state) {
+    #pragma omp parallel for
     for (int i = 0; i < AES_BLOCK_SIZE; i++) {
         int idx = state[i];
         uint8_t sub = sbox[idx];
@@ -64,6 +67,7 @@ static void sub_bytes (uint8_t *state) {
 void shift_rows(uint8_t *state) {
     uint8_t tmp[AES_BLOCK_SIZE];
 
+    #pragma omp parallel for collapse(2)
     for (int i = 0; i < AES_BLOCK_LEN; i++) {
         int start_idx = i;
         int end_idx = start_idx + AES_BLOCK_LEN * (AES_BLOCK_LEN - 1);
@@ -76,6 +80,7 @@ void shift_rows(uint8_t *state) {
         }
     }
 
+    #pragma omp parallel for
     for(int i = 0; i < AES_BLOCK_SIZE; i++) {
         state[i] = tmp[i];
     }
@@ -116,12 +121,14 @@ void mix_cols(uint8_t *state) {
         }
     }
 
+    #pragma omp parallel for
     for (int i = 0; i < AES_BLOCK_SIZE; i++) {
         state[i] = tmp[i];
     }
 }
 
 static void add_round_key(uint8_t *key, uint8_t *state) {
+    #pragma omp parallel for
     for (int i = 0; i < AES_BLOCK_SIZE; i++) {
         state[i] ^= key[i];
     }
@@ -143,21 +150,23 @@ uint8_t *AES_encrypt(uint8_t *exp_keys, const char *msg, int padded_len) {
         padded_msg[i] = msg[i];
     }
     
-    uint8_t *p = padded_msg;
-    uint8_t *padded_msg_end = padded_msg + padded_len;
+    int blocks = padded_len / AES_BLOCK_SIZE;
 
-    while (p < padded_msg_end) {
+    // replace while with for
+    #pragma omp parallel for
+    for (int i = 0; i < blocks; i++) {
+        uint8_t *p = padded_msg + AES_BLOCK_SIZE * i;
         uint8_t state[AES_BLOCK_SIZE];
         memcpy(state, p, AES_BLOCK_SIZE);
 
         add_round_key(exp_keys, state); // init round (not included in total rounds)
         
         int rounds = AES_TOTAL_ROUNDS - 1;
-        for (int i = 0; i < rounds; i++) {
+        for (int j = 0; j < rounds; j++) {
             sub_bytes(state);
             shift_rows(state);
             mix_cols(state);
-            add_round_key(exp_keys + AES_BLOCK_SIZE * (i + 1), state);
+            add_round_key(exp_keys + AES_BLOCK_SIZE * (j + 1), state);
         }
 
         // final round
@@ -165,11 +174,9 @@ uint8_t *AES_encrypt(uint8_t *exp_keys, const char *msg, int padded_len) {
         shift_rows(state);
         add_round_key(exp_keys + AES_BLOCK_SIZE * AES_TOTAL_ROUNDS, state);
 
-        for (int i = 0; i < AES_BLOCK_SIZE; i++) {
-            p[i] = state[i];
+        for (int j = 0; j < AES_BLOCK_SIZE; j++) {
+            p[j] = state[j];
         }
-
-        p += AES_BLOCK_SIZE;
     }
     
     return padded_msg;
